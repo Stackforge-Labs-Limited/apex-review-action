@@ -1,0 +1,64 @@
+# Runs the action against itself with fake models: no keys, no cost.
+#
+# ROUNDTABLE_FAKE_PROVIDERS makes the CLI's engine answer every model call with
+# canned findings, which always include some at critical and high. So the gate
+# must trip (exit 2), and with fail-on none it must not.
+name: Test
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    env:
+      ROUNDTABLE_FAKE_PROVIDERS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: apex
+        uses: ./
+        continue-on-error: true
+        with:
+          anthropic-api-key: fake
+          openai-api-key: fake
+          google-api-key: fake
+          pr-number: '11314'
+          repository: octocat/Hello-World
+          comment: 'false'
+      - name: The gate tripped, with a report
+        env:
+          CODE: ${{ steps.apex.outputs.exit-code }}
+          RESULT: ${{ steps.apex.outputs.result }}
+          REPORT: ${{ steps.apex.outputs.report }}
+        run: |
+          echo "exit-code=$CODE result=$RESULT"
+          test "$CODE" = "2"
+          test -s "$REPORT"
+
+  comment:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      ROUNDTABLE_FAKE_PROVIDERS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: apex
+        uses: ./
+        with:
+          anthropic-api-key: fake
+          openai-api-key: fake
+          google-api-key: fake
+          fail-on: none
+      - name: Exactly one review comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          n=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --jq '[.[] | select(.body | startswith("<!-- apex-directive-review -->"))] | length')
+          test "$n" = "1"
