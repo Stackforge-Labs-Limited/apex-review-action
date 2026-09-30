@@ -1,0 +1,131 @@
+name: Apex Directive review
+description: A panel of AI models from different labs reviews each pull request and agrees on one ranked list of what to fix.
+author: Apex Directive
+branding:
+  icon: users
+  color: orange
+
+inputs:
+  anthropic-api-key:
+    description: Anthropic API key. Needed when a seat or the merge runs a Claude model.
+    required: false
+  openai-api-key:
+    description: OpenAI API key. Needed when a seat runs a GPT model.
+    required: false
+  google-api-key:
+    description: Google AI API key. Needed when a seat runs a Gemini model.
+    required: false
+  openrouter-api-key:
+    description: OpenRouter API key. Needed when a seat runs a model through OpenRouter (DeepSeek, Qwen, Llama, Grok, Kimi).
+    required: false
+  models:
+    description: >
+      The panel, as provider:model pairs separated by commas, two to five of
+      them. Ignored when the repository has an .apex.toml with seats in it.
+    required: false
+    default: anthropic:claude-sonnet-5, openai:gpt-5.5, google:gemini-3.6-flash
+  merge-model:
+    description: The provider:model that merges the panel's findings. Ignored when .apex.toml sets one.
+    required: false
+    default: anthropic:claude-sonnet-5
+  fail-on:
+    description: Fail the job if an open finding is at or above this severity (critical, high, medium, low, or none).
+    required: false
+    default: high
+  budget:
+    description: Refuse to run, sending nothing, if the estimated input is over this many tokens (for example 200k).
+    required: false
+    default: 200k
+  template:
+    description: Review type (code, architecture, document or custom). Empty uses .apex.toml or the CLI's default.
+    required: false
+    default: ''
+  require-all-seats:
+    description: Fail if any seat does not answer, instead of reviewing with the seats that did.
+    required: false
+    default: 'false'
+  comment:
+    description: Post the review as a comment on the pull request, and update it on later pushes.
+    required: false
+    default: 'true'
+  pr-number:
+    description: The pull request to review. Defaults to the one that triggered the workflow.
+    required: false
+    default: ''
+  repository:
+    description: owner/name of the repository the pull request is in. Defaults to this one.
+    required: false
+    default: ''
+  cli-version:
+    description: The @apex-directive/cli version to run. Pinned so a new release never changes a passing build.
+    required: false
+    default: 0.1.3
+  github-token:
+    description: Token used to read the pull request and to comment on it.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  result:
+    description: 'The CLI''s verdict line, for example "fail: 2 open findings at or above high (exit 2)".'
+    value: ${{ steps.review.outputs.result }}
+  exit-code:
+    description: 0 ok, 1 usage or config error, 2 fail-on tripped, 3 over budget (nothing sent), 4 a seat did not answer.
+    value: ${{ steps.review.outputs.exit-code }}
+  report:
+    description: Path to apex-review.md, when one was written.
+    value: ${{ steps.review.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: 24
+
+    # Every input reaches the script through env, never through ${{ }} inside
+    # `run:`. An input is text a workflow author controls, and a pull request
+    # title or branch name can end up in one; interpolated into a script it
+    # would be code.
+    - id: review
+      shell: bash
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        GOOGLE_API_KEY: ${{ inputs.google-api-key }}
+        OPENROUTER_API_KEY: ${{ inputs.openrouter-api-key }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        APEX_MODELS: ${{ inputs.models }}
+        APEX_MERGE: ${{ inputs.merge-model }}
+        APEX_FAIL_ON: ${{ inputs.fail-on }}
+        APEX_BUDGET: ${{ inputs.budget }}
+        APEX_TEMPLATE: ${{ inputs.template }}
+        APEX_REQUIRE_ALL: ${{ inputs.require-all-seats }}
+        APEX_PR: ${{ inputs.pr-number || github.event.pull_request.number }}
+        APEX_REPO: ${{ inputs.repository || github.repository }}
+        APEX_CLI_VERSION: ${{ inputs.cli-version }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/review.sh"
+
+    - if: always() && steps.review.outputs.report != ''
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: apex-review
+        path: ${{ steps.review.outputs.report }}
+        if-no-files-found: ignore
+
+    - if: always() && inputs.comment == 'true' && steps.review.outputs.report != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        APEX_PR: ${{ inputs.pr-number || github.event.pull_request.number }}
+        APEX_REPO: ${{ inputs.repository || github.repository }}
+        APEX_REPORT: ${{ steps.review.outputs.report }}
+        APEX_RESULT: ${{ steps.review.outputs.result }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/comment.sh"
+
+    # Last, so the artifact and the comment land even when the gate trips.
+    - if: always()
+      shell: bash
+      env:
+        APEX_EXIT: ${{ steps.review.outputs.exit-code }}
+      run: exit "${APEX_EXIT:-1}"
