@@ -40,14 +40,14 @@ That's it. The next pull request gets a review.
 
 ## Choose the panel
 
-The default panel is Claude Sonnet 5, GPT-5.5 and Gemini 3.6 Flash, merged by
-Claude Sonnet 5. Change it with `models` (two to five `provider:model` pairs)
+The default panel is Claude Sonnet 5.5, GPT-6.1 Sol and Gemini 3.8 Flash,
+merged by Claude Sonnet 5.5. Change it with `models` (two to five `provider:model` pairs)
 and `merge-model`:
 
 ```yaml
         with:
-          models: anthropic:claude-sonnet-5, openrouter:deepseek/deepseek-v4-pro
-          merge-model: anthropic:claude-sonnet-5
+          models: anthropic:claude-sonnet-5-5, openrouter:deepseek/deepseek-v4-pro
+          merge-model: anthropic:claude-sonnet-5-5
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 ```
@@ -61,8 +61,8 @@ your CI run the same panel.
 | Input | Default | What it does |
 | --- | --- | --- |
 | `anthropic-api-key`, `openai-api-key`, `google-api-key`, `openrouter-api-key` | | Keys for the providers your panel uses. |
-| `models` | `anthropic:claude-sonnet-5, openai:gpt-5.5, google:gemini-3.6-flash` | The panel. |
-| `merge-model` | `anthropic:claude-sonnet-5` | The model that merges the findings. |
+| `models` | `anthropic:claude-sonnet-5-5, openai:gpt-6.1-sol, google:gemini-3.8-flash` | The panel. |
+| `merge-model` | `anthropic:claude-sonnet-5-5` | The model that merges the findings. |
 | `fail-on` | `high` | Fail the job on an open finding at or above `critical`, `high`, `medium` or `low`. `none` never fails on findings. |
 | `budget` | `200k` | Refuse to run, sending nothing, if the input is estimated above this many tokens. |
 | `template` | | `code`, `architecture`, `document` or `custom`. |
