@@ -56,6 +56,12 @@ jobs:
   review:
     if: github.event.label.name == 'apex-review'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # One review per pull request at a time: adding the label again while one
+    # runs cancels the old run instead of paying for two.
+    concurrency:
+      group: apex-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
     steps:
       - uses: Stackforge-Labs-Limited/apex-review-action@v1
         with:
