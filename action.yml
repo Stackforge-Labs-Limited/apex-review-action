@@ -60,8 +60,14 @@ inputs:
     description: The @apex-directive/cli version to run. Pinned so a new release never changes a passing build.
     required: false
     default: 0.2.0
+  remove-label:
+    description: >
+      When the workflow runs on a `labeled` event, take that label off the pull
+      request after the review, so adding it again runs a fresh one.
+    required: false
+    default: 'false'
   github-token:
-    description: Token used to read the pull request and to comment on it.
+    description: Token used to read the pull request, to comment on it and to remove the trigger label.
     required: false
     default: ${{ github.token }}
 
@@ -122,6 +128,16 @@ runs:
         APEX_REPORT: ${{ steps.review.outputs.report }}
         APEX_RESULT: ${{ steps.review.outputs.result }}
       run: bash "$GITHUB_ACTION_PATH/scripts/comment.sh"
+
+    - if: always() && inputs.remove-label == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        APEX_PR: ${{ inputs.pr-number || github.event.pull_request.number }}
+        APEX_REPO: ${{ inputs.repository || github.repository }}
+        APEX_EVENT_ACTION: ${{ github.event.action }}
+        APEX_LABEL: ${{ github.event.label.name }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/unlabel.sh"
 
     # Last, so the artifact and the comment land even when the gate trips.
     - if: always()
