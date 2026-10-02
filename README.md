@@ -38,6 +38,50 @@ jobs:
 
 That's it. The next pull request gets a review.
 
+## Run only when a label is added
+
+To review only the pull requests someone asks for, trigger on a label instead
+of on every push:
+
+```yaml
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+  pull-requests: write   # to comment, and to remove the label
+
+jobs:
+  review:
+    if: github.event.label.name == 'apex-review'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: Stackforge-Labs-Limited/apex-review-action@v1
+        with:
+          remove-label: true
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          google-api-key: ${{ secrets.GOOGLE_API_KEY }}
+```
+
+Add the `apex-review` label to a pull request and it gets one review. With
+`remove-label: true` the label comes off when the review is done, so adding it
+again reviews the latest push.
+
+To keep reviewing every push once the label is on, leave `remove-label` off and
+listen for pushes too:
+
+```yaml
+on:
+  pull_request:
+    types: [labeled, synchronize]
+
+jobs:
+  review:
+    if: contains(github.event.pull_request.labels.*.name, 'apex-review')
+```
+
 ## Choose the panel
 
 The default panel is Claude Sonnet 5.5, GPT-6.1 Sol and Gemini 3.8 Flash,
@@ -68,6 +112,7 @@ your CI run the same panel.
 | `template` | | `code`, `architecture`, `document` or `custom`. |
 | `require-all-seats` | `false` | Fail if any seat does not answer. |
 | `comment` | `true` | Post the review on the pull request. |
+| `remove-label` | `false` | On a `labeled` run, remove that label afterwards so it can be added again. |
 | `pr-number`, `repository` | the triggering pull request | Review a different pull request. |
 | `cli-version` | pinned | The CLI version to run. |
 | `github-token` | `github.token` | Reads the pull request and posts the comment. |
