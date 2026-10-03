@@ -1,0 +1,160 @@
+# Apex Directive review for GitLab merge requests.
+#
+# The GitLab counterpart of this repository's GitHub Action: a panel of AI
+# models from different labs reviews each merge request, agrees on one ranked
+# list of what to fix, posts it on the merge request, and fails the job when an
+# open finding is at or above APEX_FAIL_ON. Your own provider keys; nothing is
+# sent anywhere but the providers you name.
+#
+# Add to .gitlab-ci.yml:
+#
+#   include:
+#     - remote: 'https://raw.githubusercontent.com/Stackforge-Labs-Limited/apex-review-action/v1/gitlab/apex-review.yml'
+#
+# Then, in Settings > CI/CD > Variables (masked):
+#   ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OPENROUTER_API_KEY  the providers your panel uses
+#   APEX_GITLAB_TOKEN  a project access token, Reporter role, `api` scope, to post the review
+#
+# Every APEX_* variable below can be overridden there or on the job. README.md
+# has the full list.
+
+.apex-review:
+  image: node:24
+  stage: test
+  variables:
+    # The review measures the merge request against the commit it left its
+    # target branch at, so the job needs history, not GitLab's default 20.
+    GIT_DEPTH: "0"
+    APEX_MODELS: "anthropic:claude-sonnet-5-5, openai:gpt-6.1-sol, google:gemini-3.8-flash"
+    APEX_MERGE_MODEL: "anthropic:claude-sonnet-5-5"
+    APEX_FAIL_ON: "high"
+    APEX_BUDGET: "200k"
+    APEX_TEMPLATE: ""
+    APEX_REQUIRE_ALL_SEATS: "false"
+    APEX_COMMENT: "true"
+    # Pinned so a new CLI release never changes a passing pipeline.
+    APEX_CLI_VERSION: "0.2.0"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - |
+      set -euo pipefail
+      trim() { sed -E 's/^[[:space:]]+|[[:space:]]+$//g' <<< "$1"; }
+      fail() { echo "apex-review: $1" >&2; exit 1; }
+
+      [ -n "${CI_MERGE_REQUEST_IID:-}" ] || fail "no merge request. This job runs on merge request pipelines only."
+      [[ "$APEX_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "APEX_CLI_VERSION must be a version like 0.2.0, got '$APEX_CLI_VERSION'."
+
+      # Everything this job writes lives outside the checkout: the review
+      # reads untracked files too, and must not read its own config.
+      work="$(mktemp -d)"
+      export XDG_CONFIG_HOME="$work/config"
+      mkdir -p "$XDG_CONFIG_HOME/apex"
+      config="$XDG_CONFIG_HOME/apex/config.toml"
+
+      # The panel from APEX_MODELS, as personal defaults. A committed
+      # .apex.toml in the repository wins over these on its own.
+      : > "$config"
+      roles=(architect tech_lead security architect tech_lead)
+      i=0
+      IFS=',' read -ra pairs <<< "$APEX_MODELS"
+      for pair in "${pairs[@]}"; do
+        pair="$(trim "$pair")"
+        [ -z "$pair" ] && continue
+        # Checked before it goes into TOML: a quote or newline here would be
+        # a second key in the file rather than part of a model name.
+        [[ "$pair" =~ ^(anthropic|openai|google|openrouter):[A-Za-z0-9._/-]+$ ]] \
+          || fail "APEX_MODELS: '$pair' is not provider:model (providers: anthropic, openai, google, openrouter)."
+        [ "$i" -lt 5 ] || fail "APEX_MODELS: a panel has at most five seats."
+        printf '[[seats]]\nrole = "%s"\nprovider = "%s"\nmodel = "%s"\n\n' \
+          "${roles[$i]}" "${pair%%:*}" "${pair#*:}" >> "$config"
+        i=$((i + 1))
+      done
+      [ "$i" -ge 2 ] || fail "APEX_MODELS: a panel needs at least two seats."
+      merge="$(trim "$APEX_MERGE_MODEL")"
+      [[ "$merge" =~ ^(anthropic|openai|google|openrouter):[A-Za-z0-9._/-]+$ ]] \
+        || fail "APEX_MERGE_MODEL: '$merge' is not provider:model."
+      printf '[merge]\nprovider = "%s"\nmodel = "%s"\n' "${merge%%:*}" "${merge#*:}" >> "$config"
+
+      # What the merge request changes. A merged results pipeline checks out
+      # the merge of source into target, so it is measured against the
+      # target's tip; any other is measured against where the source branch
+      # left the target, the same base GitLab's own diff uses.
+      base="${CI_MERGE_REQUEST_TARGET_BRANCH_SHA:-${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}}"
+      [[ "$base" =~ ^[0-9a-f]{7,64}$ ]] || fail "no base commit for this merge request."
+      git cat-file -e "$base^{commit}" 2>/dev/null || git fetch -q origin "$base" \
+        || fail "commit $base is not in this checkout. Keep GIT_DEPTH: \"0\" on this job."
+
+      args=(review --ci --base "$base" --budget "$APEX_BUDGET" --no-tty)
+      [ -n "$APEX_FAIL_ON" ] && args+=(--fail-on "$APEX_FAIL_ON")
+      [ -n "$APEX_TEMPLATE" ] && args+=(--template "$APEX_TEMPLATE")
+      [ "$APEX_REQUIRE_ALL_SEATS" = "true" ] && args+=(--require-all-seats)
+
+      set +e
+      npx --yes "@apex-directive/cli@$APEX_CLI_VERSION" "${args[@]}" | tee "$work/ci.txt"
+      code=${PIPESTATUS[0]}
+      set -e
+      result="$(grep '^result: ' "$work/ci.txt" | tail -1 | sed 's/^result: //' || true)"
+
+      # One note per merge request, found by a hidden marker, so ten pushes
+      # leave one up-to-date review rather than ten stale ones. Posting never
+      # fails the job: the review is in this log and the artifact either way.
+      if [ "$APEX_COMMENT" = "true" ] && [ -f apex-review.md ]; then
+        if [ -z "${APEX_GITLAB_TOKEN:-}" ]; then
+          echo "apex-review: APEX_GITLAB_TOKEN is not set, so the review was not posted. It is in this log and the apex-review.md artifact."
+        else
+          cat > "$work/note.mjs" <<'NOTE'
+      import { readFileSync } from 'node:fs';
+      const marker = '<!-- apex-directive-review -->';
+      const env = process.env;
+      const notes = `${env.CI_API_V4_URL}/projects/${encodeURIComponent(env.CI_MERGE_REQUEST_PROJECT_ID)}/merge_requests/${env.CI_MERGE_REQUEST_IID}/notes`;
+      const headers = { 'PRIVATE-TOKEN': env.APEX_GITLAB_TOKEN, 'Content-Type': 'application/json' };
+      const body = [
+        marker,
+        '### Apex Directive review',
+        '',
+        `**${env.APEX_RESULT || 'no verdict'}**`,
+        '',
+        '<details><summary>Full review</summary>',
+        '',
+        // GitLab's note limit is 1,000,000 characters; leave room for the rest.
+        readFileSync('apex-review.md', 'utf8').slice(0, 900_000),
+        '',
+        '</details>',
+      ].join('\n');
+      const call = async (method, url, payload) => {
+        const res = await fetch(url, { method, headers, body: payload && JSON.stringify(payload) });
+        if (!res.ok) throw new Error(`${method} ${res.status}`);
+        return res.json();
+      };
+      let existing;
+      for (let page = 1; ; page++) {
+        const batch = await call('GET', `${notes}?per_page=100&page=${page}&sort=asc&order_by=created_at`);
+        for (const n of batch) if (typeof n.body === 'string' && n.body.startsWith(marker)) existing = n.id;
+        if (batch.length < 100) break;
+      }
+      try {
+        if (existing === undefined) throw new Error('no note yet');
+        await call('PUT', `${notes}/${existing}`, { body });
+        console.log('apex-review: updated the review on the merge request.');
+      } catch {
+        await call('POST', notes, { body });
+        console.log('apex-review: posted the review on the merge request.');
+      }
+      NOTE
+          APEX_RESULT="$result" node "$work/note.mjs" \
+            || echo "apex-review: could not post the review (the token needs the api scope and at least Reporter). It is in this log and the apex-review.md artifact."
+        fi
+      fi
+
+      # 0 ok, 1 usage or config error, 2 APEX_FAIL_ON tripped,
+      # 3 over APEX_BUDGET (nothing sent), 4 a seat did not answer.
+      exit "$code"
+  artifacts:
+    when: always
+    expire_in: 30 days
+    paths:
+      - apex-review.md
+
+apex-review:
+  extends: .apex-review

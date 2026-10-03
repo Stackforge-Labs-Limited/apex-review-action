@@ -137,6 +137,42 @@ uploaded as the `apex-review` artifact and shown in the job summary), and
 | 3 | Over `budget`; nothing was sent |
 | 4 | A seat did not answer |
 
+## GitLab
+
+The same review runs on GitLab merge requests, from a CI template in this
+repository.
+
+1. Add your provider keys as masked CI/CD variables (Settings → CI/CD →
+   Variables): `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `GOOGLE_API_KEY` for
+   the default panel.
+2. To post the review on the merge request, add `APEX_GITLAB_TOKEN` too: a
+   project access token with the Reporter role and the `api` scope. Without
+   it the review is still in the job log and the `apex-review.md` artifact.
+3. Add this to `.gitlab-ci.yml`:
+
+```yaml
+include:
+  - remote: 'https://raw.githubusercontent.com/Stackforge-Labs-Limited/apex-review-action/v1/gitlab/apex-review.yml'
+```
+
+The `apex-review` job runs on every merge request pipeline. Change it with
+these variables, on the job or in CI/CD settings:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `APEX_MODELS` | `anthropic:claude-sonnet-5-5, openai:gpt-6.1-sol, google:gemini-3.8-flash` | The panel. A committed `.apex.toml` wins. |
+| `APEX_MERGE_MODEL` | `anthropic:claude-sonnet-5-5` | The model that merges the findings. |
+| `APEX_FAIL_ON` | `high` | Fail the job on an open finding at or above this severity. `none` never fails on findings. |
+| `APEX_BUDGET` | `200k` | Refuse to run, sending nothing, above this many input tokens. |
+| `APEX_TEMPLATE` | | `code`, `architecture`, `document` or `custom`. |
+| `APEX_REQUIRE_ALL_SEATS` | `false` | Fail if any seat does not answer. |
+| `APEX_COMMENT` | `true` | Post the review on the merge request. |
+| `APEX_CLI_VERSION` | pinned | The CLI version to run. |
+
+The job uses the same exit codes as the action. It needs full history
+(`GIT_DEPTH: "0"`, set by the template) to find where the merge request
+left its target branch.
+
 ## Pull requests from forks
 
 GitHub does not give secrets to workflows run from a fork's pull request, so
